@@ -1,0 +1,688 @@
+---
+title: "Estimation Dashboard"
+author: " " 
+output: 
+  flexdashboard::flex_dashboard:
+    theme: readable 
+    orientation: columns
+    source_code: embed
+    vertical_layout: fill 
+runtime: shiny
+---
+
+```{r global, include=FALSE}
+# load data in 'global' chunk so it can be shared by all users of the dashboard
+library(tidyverse)
+library(leaflet)
+library(leaflet.extras)
+library(sf)
+library(RColorBrewer)
+library(htmltools)
+library(stringr)
+library(tidycensus)
+library(DT)
+library(here)
+library(knitr)
+library(rlist)
+library(leafpop)
+library(shinyWidgets)
+library(glue)
+```
+
+
+
+```{r}
+load(here("est_long.rda"))
+```
+
+
+Welcome
+=====================================  
+
+Column {data-width=600}
+-------------------------------------
+
+#### Hello!
+
+This dashboard was created in order to compare the estimates and bootstrap standard errors of different forest characteristic estimators within the Interior West. More details can be found in (paper to come)!
+
+
+#### The Project
+
+This data and app are the result of a collaboration between Reed College(Prof. Kelly McConville, Olek Wojcik, Sam Olson, Paul Nguyen) and the US Forest Service's [Forest Inventory and Analysis (FIA)](https://www.fia.fs.fed.us/) (Gretchen Moisen, Tracey Frescino), with dashboarding help from Isabelle Caldwell, Maddie Basil, and Alex Flowers.
+
+#### The Estimators
+**Horvitz-Thompson:**
+
+This is the simplest estimator here, just the average of the values found at plots, with no pixel input. 
+
+**Post-Stratification:**
+
+This is the estimator most commonly used by FIA, which incorporates one pixel-level categorical variable: forest or non-forest. 
+
+**GREG**
+
+This is the Generalized Regression which incorporates plot data and three pixel level variables: forest probability, forest biomass, and forest canopy cover. 
+
+
+**GREGORY**
+
+This is the indirect GREGORY estimator, using the same three variables as the GREG, but running regressions at the eco-province level, rather than at the county level. It is worthwhile to note that we do not have data beyond the Interior West. 
+
+#### The Dashboard
+
+This application focuses its investigations around the estimates and bootstrap standard errors of these various estimators. Several counties have exclusively zero values for their plot data, which means that our direct estimators (HT, PS, GREG) will have standard errors of zero, which we have marked as N/A. 
+
+
+
+
+Column {data-width=400}
+-------------------------------------
+
+### FIA
+```{r}
+#out.width = "5%", out.height = "5%"
+knitr::include_graphics(path = here::here("fia_logo.png")) 
+```
+
+### Reed
+
+```{r}
+#out.width = "5%", out.height = "5%"
+knitr::include_graphics(path = here::here("reed_logo.png")) 
+```
+
+### Powered by `FIESTA`!
+```{r}
+#out.width = "5%", out.height = "5%"
+knitr::include_graphics(path = here::here("fiesta_grey.png")) 
+```
+
+
+
+
+
+
+
+
+Maps
+=====================================  
+
+
+Input {.sidebar}
+--------------------------------------------------------
+
+
+```{r}
+
+sendSweetAlert(
+  session,
+  title = "Welcome to our dashboard!",
+  text = "The numbers shown here were derived for comparing statistical estimators, and are not to be used as official county estimates.",
+  type = "warning",
+  btn_labels = "I understand",
+  btn_colors = "#71AA68",
+  html = FALSE,
+  closeOnClickOutside = FALSE,
+  showCloseButton = FALSE
+)
+
+
+# This app works by gluing inputs together to get the right varible names
+
+
+selectInput(inputId = "variable",
+             label = "Which forest attribute would you like to see?",
+             choices = list("Avg. Basal Area per acre (sqft)"  = "BA",
+                            "Avg. Biomass per acre (lbs)" = "BIO",
+                            "Avg. Count of Trees per acre" = "CNT",
+                            "Avg. Tree Volume per acre (cubic feet)" = "VOLN"), 
+                                             selected =   "BA")
+
+selectInput(inputId = "Estimator",
+             label = "Which estimation method?",
+             choices = list("Horvitz-Thompson" = "HT",
+                            "Post-Stratification" = "PS",
+                            "GREG" = "GREG3",
+                            "GREGORY" = "GREGORY3"),
+             selected = "HT")
+                                
+
+                
+
+
+h5("Click on a county to see its estimate and bootstrap standard error.") 
+
+
+
+
+
+h6()
+                                
+```
+
+Column{.tabset}
+-----------------------------------------------------------------------
+### Interactive Map of Estimates 
+```{r}
+
+# This is the basic way that the app's reactivity works
+# There is one long df with a column for a value and for the nature of that value
+# For example, selecting BA and PS will glue together into BA_PS_Est here
+# Which will select the 280 rows that have as their label BA_PS_Est
+# Or the estimates of Post-Strat for Basal Area
+# So adding new models isn't crazy, as long as they follow the same format
+# In both the format of the variable name and dataframe
+# variable_model_estimate or SE
+
+  data_estimate_reactive <- reactive({
+    st_as_sf(
+      mapped_long %>% 
+        filter(
+          str_detect(
+            string = mapped_long$whatisthis, 
+            pattern = glue(as.character(input$variable), as.character(input$Estimator), "Est", .sep = "_")
+            )
+          )
+      )
+
+  })
+  
+
+
+
+
+  color_est <- reactive({colorNumeric(palette = "Greens",
+                                      domain = data_estimate_reactive()$value)})
+  
+
+
+  
+
+  content_reactive <- reactive ({ paste("",
+                   data_estimate_reactive()$county , 
+                    "", 
+                   data_estimate_reactive()$state,
+                   "", "Estimate:", 
+                 round(data_estimate_reactive()$value, digits = 2),
+                 "", "SE:",
+                 round(data_se_reactive()$value, digits = 2))}) 
+  
+  
+
+
+renderLeaflet({
+    leaflet(data_estimate_reactive(), options = leafletOptions(minZoom = 0, maxZoom = 10)) %>%
+      addProviderTiles(providers$Stamen.TonerBackground, 
+                       options = providerTileOptions(noWrap = TRUE)) %>%
+      addPolygons(popup =  ~ content_reactive(), 
+                  fillColor = ~color_est()(data_estimate_reactive()$value), weight = 1,
+                  color = "black", fillOpacity = 0.9,
+                   highlightOptions = highlightOptions(color = "white", weight = 3,
+      bringToFront = TRUE)) %>%
+      addLegend("bottomright", pal = color_est(), 
+                values = ~data_estimate_reactive()$value, 
+                title = input$variable,
+                opacity = 1)
+    
+  })
+
+
+```
+
+
+### Interactive Map of Standard Error 
+
+```{r}
+  data_se_reactive <- reactive({
+
+    st_as_sf(
+      mapped_long %>% 
+        filter(
+          str_detect(
+            string = whatisthis, 
+            pattern = glue(as.character(input$variable), as.character(input$Estimator), "SE", .sep = "_")
+            )
+          )
+      )
+
+  })
+
+color_se <- reactive({ colorNumeric(palette = "Reds", domain = data_se_reactive()$value)
+})
+
+
+
+
+
+renderLeaflet({
+    leaflet(data_se_reactive(), options = leafletOptions(minZoom = 0, maxZoom = 10)) %>%
+      addProviderTiles(providers$Stamen.TonerBackground, 
+                       options = providerTileOptions(noWrap = TRUE)) %>%
+      addPolygons(popup =  ~ content_reactive(), 
+                  fillColor = ~color_se()(data_se_reactive()$value), weight = 1,
+                  color = "black", fillOpacity = 0.9,
+                   highlightOptions = highlightOptions(color = "white", weight = 3,
+      bringToFront = TRUE)) %>%
+      addLegend("bottomright", pal = color_se(), 
+                values = ~data_se_reactive()$value, title = input$variable,
+                opacity = 1)
+    
+  })
+
+
+```
+
+
+Relative Efficency 
+============================================
+
+Input {.sidebar}
+--------------------------------------------------------
+
+```{r}
+
+
+selectInput(inputId = "variable_releff",
+             label = "Which forest attribute would you like to see?",
+             choices = list("Avg. Basal Area per acre (sqft)"  = "BA",
+                            "Avg. Biomass per acre (lbs)" = "BIO",
+                            "Avg. Count of Trees per acre" = "CNT",
+                            "Avg. Tree Volume per acre (cubic feet)" = "VOLN"), 
+                                             selected =   "BA")
+
+ 
+selectInput(inputId = "Estimator_one",
+             label = "Estimation Method 1",
+             choices = list("Horvitz-Thompson" = "HT",
+                            "Post-Stratification" = "PS",
+                            "GREG" = "GREG3",
+                            "GREGORY" = "GREGORY3"),
+             selected = "HT")
+
+# Gotta deal with them N/As...
+
+selectInput(inputId = "Estimator_two",
+             label = "Estimation Method 2",
+             choices = list("Horvitz-Thompson" = "HT",
+                            "Post-Stratification" = "PS",
+                            "GREG" = "GREG3",
+                            "GREGORY" = "GREGORY3"),
+             selected = "GREGORY3")    
+
+
+h5("To compute the relative efficiency, the Standard Error of your first choice will be divided by the Standard Error of your second choice.")
+
+h5("NA values are typically due to counties having exclusively zero value plots.")
+
+
+
+
+
+h6()
+                                
+```
+
+Column{.tabset}
+-----------------------------------------------------------------------
+### Relative Efficiency 
+```{r}
+
+
+  data_estimate_reactive_one <- reactive({
+    st_as_sf(
+      mapped_long %>% 
+        filter(
+          str_detect(
+            string = mapped_long$whatisthis, 
+            pattern = glue(as.character(input$variable_releff), as.character(input$Estimator_one), "SE", .sep = "_")
+            )
+          )
+      )
+
+  })
+
+  data_estimate_reactive_two <- reactive({
+    st_as_sf(
+      mapped_long %>% 
+        filter(
+          str_detect(
+            string = mapped_long$whatisthis, 
+            pattern = glue(as.character(input$variable_releff), as.character(input$Estimator_two), "SE", .sep = "_")
+            )
+          )
+      )
+
+  })
+
+ 
+data_rel_eff <- reactive({
+  st_join(data_estimate_reactive_one(), (data_estimate_reactive_two() %>% select(value, geometry)),
+          join = st_contains)
+})
+
+map_re_reactive <- reactive ({
+  data_rel_eff() %>% 
+    mutate(
+      rel_eff = value.x / value.y
+      ) %>%
+    mutate(
+      Est = case_when(
+        rel_eff < 1 ~ "Est 1 SE is lower",
+        rel_eff > 1 ~ "Est 2 SE is lower",
+        rel_eff == 1 ~ "Same SE"
+      )
+    )
+})
+
+
+
+content_re_reactive <- reactive ({ paste("",
+                   map_re_reactive()$county , 
+                    "", 
+                   map_re_reactive()$state,
+                   "", "Relative Efficency:", 
+                 round(map_re_reactive()$rel_eff, digits = 2)) 
+    
+  }) 
+
+pal3 <- reactive({
+colorFactor(palette = "Dark2", domain = map_re_reactive()$Est, na.color = "grey")
+})
+renderLeaflet({
+    leaflet(map_re_reactive(), 
+            options = leafletOptions(minZoom = 0, maxZoom = 12)) %>%
+      addProviderTiles(providers$Stamen.TonerBackground, 
+                       options = providerTileOptions(noWrap = TRUE)) %>%
+      addPolygons(popup =  ~ content_re_reactive(), 
+                  fillColor = ~pal3()(map_re_reactive()$Est), weight = 1,
+                  color = "black", fillOpacity = 0.9) %>%
+      addLegend("bottomright", pal = pal3() , 
+                values = ~map_re_reactive()$Est,
+                title = "Relative Efficency",
+                opacity = 1)
+
+
+})
+
+  renderPrint({
+    data_estimate_reactive_one()
+    data_estimate_reactive_two()
+  })
+```
+
+
+
+Comparing Two Estimators 
+============================================
+
+
+Inputs {.sidebar}
+-------------------------------------
+
+```{r}
+selectInput(inputId = "variable_compare",
+             label = "Which forest attribute would you like to see?",
+             choices = list("Avg. Basal Area per acre (sqft)"  = "BA",
+                            "Avg. Biomass per acre (lbs)" = "BIO",
+                            "Avg. Count of Trees per acre" = "CNT",
+                            "Avg. Tree Volume per acre (cubic feet)" = "VOLN"), 
+                                             selected =   "BA")
+
+ 
+selectInput(inputId = "Estimator_one_compare",
+             label = "Estimation Method 1",
+             choices = list("Horvitz-Thompson" = "HT",
+                            "Post-Stratification" = "PS",
+                            "GREG" = "GREG3",
+                            "GREGORY" = "GREGORY3"),
+             selected = "HT")
+
+
+selectInput(inputId = "Estimator_two_compare",
+             label = "Estimation Method 2",
+             choices = list("Horvitz-Thompson" = "HT",
+                            "Post-Stratification" = "PS",
+                            "GREG" = "GREG3",
+                            "GREGORY" = "GREGORY3"),
+             selected = "GREGORY3")
+
+
+
+
+# sliderInput("slider_pixel", label = h6("County Pixels, Low to High"), min = 0, 
+#         max = 53702650, value = c(0, 53702650))
+
+sliderInput("slider_plot", label = h6("County Plots, Low to High"), min = 0, 
+        max = 1956, value = c(0, 1956))
+
+sliderInput("slider_cover", label = h6("County Forest Cover, Low to High"), min = 0, 
+        max = 62, value = c(0, 62))
+
+```
+
+
+Row 
+-------------------------------------
+    
+### Comparative Donut Chart
+    
+```{r}
+long <- st_drop_geometry(mapped_long)
+
+#  long_cover <- long_first %>% 
+#         filter(
+#           str_detect(
+#             string = mapped_long$whatisthis, 
+#             pattern = c("forcover")
+#             )
+#           ) %>%
+#    rename(forcover = value) %>%
+#    select(fips, forcover)
+# long <- left_join(long_first, long_cover, by = "fips") %>%
+#   rename(n = n)
+
+
+
+  data_se_reactive_one_compare <- reactive({
+
+      long %>% 
+        filter(
+          str_detect(
+            string = mapped_long$whatisthis, 
+            pattern = glue(as.character(input$variable_compare), as.character(input$Estimator_one_compare), "SE", .sep = "_")
+            )
+          )
+
+  })
+
+ data_se_reactive_two_compare <- reactive({
+
+      long %>% 
+        filter(
+          str_detect(
+            string = mapped_long$whatisthis, 
+            pattern = glue(as.character(input$variable_compare), as.character(input$Estimator_two_compare), "SE", .sep = "_")
+            )
+          )
+
+  })
+
+   data_est_reactive_one_compare <- reactive({
+
+      long %>% 
+        filter(
+          str_detect(
+            string = mapped_long$whatisthis, 
+            pattern = glue(as.character(input$variable_compare), as.character(input$Estimator_one_compare), "Est", .sep = "_")
+            )
+          )
+ })
+     
+   
+      data_est_reactive_two_compare <- reactive({
+
+      long %>% 
+        filter(
+          str_detect(
+            string = mapped_long$whatisthis, 
+            pattern = glue(as.character(input$variable_compare), as.character(input$Estimator_two_compare), "Est", .sep = "_")
+            )
+          )
+
+
+  })
+ 
+      
+
+pie_cart_data <- reactive({
+  left_join(data_se_reactive_one_compare(), data_se_reactive_two_compare(), by = c("fips", "pixels", "n", "county", "state", "forcover")) %>%
+  mutate(
+    dummy = case_when(
+      value.x > value.y ~ "Est. 2:",
+      value.x < value.y ~ "Est. 1:",
+      value.x == value.y ~ "Estimates have same SE"
+    )
+  ) %>%
+    rename("Estimation Method 1" = value.x,
+           "Estimation Method 2" = value.y) %>% 
+        filter(
+          n >= input$slider_plot[1],
+          n <= input$slider_plot[2],
+          # pixels >= input$slider_pixel[1],
+          # pixels <= input$slider_pixel[2],
+          forcover >= input$slider_cover[1],
+          forcover <= input$slider_cover[2]
+        ) %>%
+group_by(dummy) %>%
+  summarize(count = n()) %>%
+   mutate(fraction = count / sum(count)) %>%
+  mutate(ymax = cumsum(fraction)) %>%
+  mutate(ymin = c(0, head(ymax, n = -1))) %>%
+  mutate(labelPosition = (ymax + ymin)/2) %>%
+  mutate(label = paste0(dummy, "\n", count))
+})
+
+
+
+renderPlot({
+ggplot(pie_cart_data(), aes(ymax = ymax, ymin = ymin, xmax = 4, xmin = 3, fill = dummy)) +
+  geom_rect() +
+  geom_label( x = 3.5, aes(y = labelPosition, label = label), size = 5) +
+scale_fill_brewer(palette = "Dark2", na.value = "grey") +
+  coord_polar(theta = "y") +
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(legend.position = "none") + ggtitle("How many counties have a lower SE for this Est. Method?")
+})
+
+renderPrint({
+  input$slider_button
+})
+
+```
+   
+### Differences Between Estimates and Forest Canopy Cover
+
+```{r}
+chart_data <- reactive({
+  left_join(data_se_reactive_one_compare(), data_se_reactive_two_compare(), by = c("fips", "pixels", "n", "county", "state", "forcover")) %>% 
+    left_join(data_est_reactive_one_compare(), by = c("fips", "pixels", "n", "county", "state", "forcover")) %>%
+        left_join(data_est_reactive_two_compare(), by = c("fips", "pixels", "n", "county", "state", "forcover")) %>%
+
+        filter(
+          n >= input$slider_plot[1],
+          n <= input$slider_plot[2],
+          # pixels >= input$slider_pixel[1],
+          # pixels <= input$slider_pixel[2],
+          forcover >= input$slider_cover[1],
+          forcover <= input$slider_cover[2]
+        ) %>%
+  mutate(
+    Est = case_when(
+      value.x > value.y ~ "Est. 2 has lower SE",
+      value.x < value.y ~ "Est. 1 has lower SE",
+      value.x == value.y ~ "Estimates have same SE"
+    )
+  ) %>%
+        mutate(
+      EstOneMinusEstTwo = (value.x.x - value.y.y)
+    ) 
+ })
+
+
+renderPlot({
+  ggplot(chart_data(), aes(x = as.numeric(EstOneMinusEstTwo), y = forcover, col = Est, palette = "viridis")) +
+  geom_jitter(alpha = 0.9, size = 2) + theme_minimal() + labs(x = "Estimate 1 - Estimate 2", y = "Forest Canopy Cover") + scale_color_brewer(palette="Dark2") + theme(axis.text = element_text(size = 14),
+        axis.title=element_text(size = 16), legend.text = element_text(size = 13)) + annotate(geom = "rect", xmin = 0, xmax = Inf, ymin = 0, ymax = Inf, alpha = 0.1)
+})
+```
+
+
+
+Row 
+-------------------------------------
+   
+### Distribution of Standard Error
+
+```{r}
+
+reactive_long_se <- reactive({
+  left_join(
+    data_se_reactive_one_compare(), data_se_reactive_two_compare(),
+    by = c("fips", "pixels","n", "county", "state", "forcover")
+  ) %>%
+    rename("Estimation Method 1" = value.x,
+           "Estimation Method 2" = value.y) %>%
+        filter(
+          n >= input$slider_plot[1],
+          n <= input$slider_plot[2],
+          # pixels >= input$slider_pixel[1],
+          # pixels <= input$slider_pixel[2],
+          forcover >= input$slider_cover[1],
+          forcover <= input$slider_cover[2]
+        ) %>%
+  pivot_longer(-c("fips", "pixels", "n", "county", "state", "whatisthis.x", "whatisthis.y", "forcover"), names_to = "xory", values_to = "value") 
+
+ 
+}) 
+renderPlot({
+
+ggplot(reactive_long_se(), aes(x = xory, y = value)) + 
+  geom_violin(fill = "#E7298A", color = "#E7298A") + theme_minimal() + labs(x = "") + geom_boxplot(width = 0.1) + theme(axis.text = element_text(size = 14),
+        axis.title=element_text(size = 16))
+
+
+})
+
+```   
+ 
+### Distribution of Estimate
+    
+```{r}
+reactive_long_est <- reactive({
+  left_join(
+    data_est_reactive_one_compare(), data_est_reactive_two_compare(),
+    by = c("fips", "pixels","n", "county", "state", "forcover")
+  ) %>%
+    rename("Estimation Method 1" = value.x,
+           "Estimation Method 2" = value.y) %>%
+        filter(
+          n >= input$slider_plot[1],
+          n <= input$slider_plot[2],
+          # pixels >= input$slider_pixel[1],
+          # pixels <= input$slider_pixel[2],
+          forcover >= input$slider_cover[1],
+          forcover <= input$slider_cover[2]
+        ) %>%
+  pivot_longer(-c("fips", "pixels", "n", "county", "state", "whatisthis.x", "whatisthis.y", "forcover"), names_to = "xory", values_to = "value") 
+})
+
+renderPlot({
+
+ggplot(reactive_long_est(), aes(x = xory, y = value)) + 
+  geom_violin(fill = "#66A61E", color = "#66A61E") + theme_minimal() + labs(x = "") + geom_boxplot(width = 0.1) + theme(axis.text = element_text(size = 14),
+        axis.title=element_text(size = 16))
+
+})
+```
